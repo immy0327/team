@@ -26,6 +26,12 @@ public class QRCodeManager : MonoBehaviour
         public float UntrackedSince = -1f;
         public bool HasLost;
         public Quaternion StandingRotationOffset = Quaternion.identity;
+        public bool HasValidQRCodePose;
+        public Vector3 LastQRCodePosition;
+        public Quaternion LastQRCodeRotation = Quaternion.identity;
+        public Vector3 PendingQRCodePosition;
+        public Quaternion PendingQRCodeRotation = Quaternion.identity;
+        public float PendingQRCodeSince = -1f;
     }
 
     [SerializeField]
@@ -78,6 +84,18 @@ public class QRCodeManager : MonoBehaviour
 
     [SerializeField]
     private float _modelVerticalOffset = 0.02f;
+
+    [SerializeField]
+    private bool _filterQRCodePoseJumps = true;
+
+    [SerializeField]
+    private float _maxQRCodeJumpDistance = 0.6f;
+
+    [SerializeField]
+    private float _jumpRecoverySeconds = 0.25f;
+
+    [SerializeField]
+    private float _poseSmoothingSpeed = 18f;
 
     [SerializeField]
     private float _healthBarHeight = 0.35f;
@@ -407,9 +425,71 @@ public class QRCodeManager : MonoBehaviour
         }
 
         var modelTransform = model.Instance.transform;
-        modelTransform.position = trackable.transform.position + Vector3.up * _modelVerticalOffset;
-        modelTransform.rotation = GetUprightRotation(trackable.transform.rotation);
+        var targetPosition = trackable.transform.position + Vector3.up * _modelVerticalOffset;
+        var targetRotation = GetUprightRotation(trackable.transform.rotation);
+        var hadValidPose = model.HasValidQRCodePose;
+
+        if (!TryAcceptQRCodePose(model, targetPosition, targetRotation))
+        {
+            return;
+        }
+
+        if (!hadValidPose || _poseSmoothingSpeed <= 0f)
+        {
+            modelTransform.position = model.LastQRCodePosition;
+            modelTransform.rotation = model.LastQRCodeRotation;
+            model.StandingRotationOffset = GetStandingRotationOffset(modelTransform.rotation);
+            return;
+        }
+
+        var smoothing = 1f - Mathf.Exp(-Mathf.Max(0f, _poseSmoothingSpeed) * Time.deltaTime);
+        modelTransform.position = Vector3.Lerp(modelTransform.position, model.LastQRCodePosition, smoothing);
+        modelTransform.rotation = Quaternion.Slerp(modelTransform.rotation, model.LastQRCodeRotation, smoothing);
         model.StandingRotationOffset = GetStandingRotationOffset(modelTransform.rotation);
+    }
+
+    private bool TryAcceptQRCodePose(SpawnedQRCodeModel model, Vector3 targetPosition, Quaternion targetRotation)
+    {
+        if (!_filterQRCodePoseJumps || !model.HasValidQRCodePose)
+        {
+            AcceptQRCodePose(model, targetPosition, targetRotation);
+            return true;
+        }
+
+        var maxJumpDistance = Mathf.Max(0f, _maxQRCodeJumpDistance);
+        var jumpDistance = Vector3.Distance(model.LastQRCodePosition, targetPosition);
+        if (maxJumpDistance <= 0f || jumpDistance <= maxJumpDistance)
+        {
+            AcceptQRCodePose(model, targetPosition, targetRotation);
+            return true;
+        }
+
+        if (model.PendingQRCodeSince < 0f ||
+            Vector3.Distance(model.PendingQRCodePosition, targetPosition) > maxJumpDistance * 0.25f)
+        {
+            model.PendingQRCodePosition = targetPosition;
+            model.PendingQRCodeRotation = targetRotation;
+            model.PendingQRCodeSince = Time.time;
+            Debug.Log($"<<< Ignoring QRCode pose jump for {model.Key}: {jumpDistance:0.00}m >>>");
+            return false;
+        }
+
+        if (Time.time - model.PendingQRCodeSince < Mathf.Max(0f, _jumpRecoverySeconds))
+        {
+            return false;
+        }
+
+        AcceptQRCodePose(model, model.PendingQRCodePosition, model.PendingQRCodeRotation);
+        Debug.Log($"<<< Accepted stable QRCode pose jump for {model.Key}. >>>");
+        return true;
+    }
+
+    private static void AcceptQRCodePose(SpawnedQRCodeModel model, Vector3 position, Quaternion rotation)
+    {
+        model.LastQRCodePosition = position;
+        model.LastQRCodeRotation = rotation;
+        model.HasValidQRCodePose = true;
+        model.PendingQRCodeSince = -1f;
     }
 
     private Quaternion GetUprightRotation(Quaternion qrRotation)
