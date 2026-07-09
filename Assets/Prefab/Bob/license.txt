@@ -1,0 +1,11 @@
+Model Information:
+* title:	Custom NASB SpongeBob Idle Animation
+* source:	https://sketchfab.com/3d-models/custom-nasb-spongebob-idle-animation-2c8b78b4fe594542929753bd648df095
+* author:	RomyBlox1234 Production's (https://sketchfab.com/romyblox1234)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Custom NASB SpongeBob Idle Animation" (https://sketchfab.com/3d-models/custom-nasb-spongebob-idle-animation-2c8b78b4fe594542929753bd648df095) by RomyBlox1234 Production's (https://sketchfab.com/romyblox1234) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
