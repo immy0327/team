@@ -562,6 +562,10 @@ MonoBehaviour:
     Prefab: {fileID: 5436415929602374355, guid: 5443763e0f61f3a47ad3330db0a39f53, type: 3}
     Health: 100
     ModelRotationOffsetEuler: {x: 0, y: 0, z: 0}
+  - Key: tiger
+    Prefab: {fileID: 3068853791035469121, guid: a927ffc5826a01e4398349d966f991f9, type: 3}
+    Health: 90
+    ModelRotationOffsetEuler: {x: 0, y: 0, z: 0}
   _hideModelWhenQRCodeNotTracked: 1
   _hideDelaySeconds: 0.5
   _enableBattle: 1
@@ -570,6 +574,15 @@ MonoBehaviour:
   _moveModelsTogetherBeforeBattle: 1
   _approachSpeed: 0.2
   _battleStartDistance: 0.1
+  _faceEachOtherDuringBattle: 1
+  _turnSpeedDegreesPerSecond: 360
+  _modelYawOffsetDegrees: 0
+  _modelUprightOffsetEuler: {x: 0, y: 0, z: 0}
+  _modelVerticalOffset: 0.02
+  _filterQRCodePoseJumps: 1
+  _maxQRCodeJumpDistance: 0.6
+  _jumpRecoverySeconds: 0.25
+  _poseSmoothingSpeed: 18
   _healthBarHeight: 0.35
   _healthBarWidth: 0.28
   _healthBarMaxValue: 100
