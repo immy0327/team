@@ -568,6 +568,9 @@ MonoBehaviour:
   _moveModelsTogetherBeforeBattle: 1
   _approachSpeed: 0.2
   _battleStartDistance: 0.1
+  _faceEachOtherDuringBattle: 1
+  _turnSpeedDegreesPerSecond: 360
+  _modelYawOffsetDegrees: 0
   _healthBarHeight: 0.35
   _healthBarWidth: 0.28
   _healthBarMaxValue: 100
