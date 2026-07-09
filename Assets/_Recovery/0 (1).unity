@@ -557,11 +557,9 @@ MonoBehaviour:
   - Key: Bob
     Prefab: {fileID: 5014232520241927814, guid: 67908f658a3b3744caa1ccdfb78ffa86, type: 3}
     Health: 80
-    ModelRotationOffsetEuler: {x: -90, y: 0, z: 0}
   - Key: pikachu
     Prefab: {fileID: 5436415929602374355, guid: 5443763e0f61f3a47ad3330db0a39f53, type: 3}
     Health: 100
-    ModelRotationOffsetEuler: {x: 0, y: 0, z: 0}
   _hideModelWhenQRCodeNotTracked: 1
   _hideDelaySeconds: 0.5
   _enableBattle: 1
@@ -570,6 +568,10 @@ MonoBehaviour:
   _moveModelsTogetherBeforeBattle: 1
   _approachSpeed: 0.2
   _battleStartDistance: 0.1
+  _faceEachOtherDuringBattle: 1
+  _turnSpeedDegreesPerSecond: 360
+  _modelYawOffsetDegrees: 0
+  _modelVerticalOffset: 0.02
   _healthBarHeight: 0.35
   _healthBarWidth: 0.28
   _healthBarMaxValue: 100

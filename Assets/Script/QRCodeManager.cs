@@ -12,6 +12,7 @@ public class QRCodeManager : MonoBehaviour
         public string Key;
         public GameObject Prefab;
         public int Health = 100;
+        public Vector3 ModelRotationOffsetEuler;
     }
 
     private class SpawnedQRCodeModel
@@ -71,6 +72,9 @@ public class QRCodeManager : MonoBehaviour
 
     [SerializeField]
     private float _modelYawOffsetDegrees;
+
+    [SerializeField]
+    private Vector3 _modelUprightOffsetEuler;
 
     [SerializeField]
     private float _modelVerticalOffset = 0.02f;
@@ -143,11 +147,6 @@ public class QRCodeManager : MonoBehaviour
                 continue;
             }
 
-            if (!_hideModelWhenQRCodeNotTracked)
-            {
-                continue;
-            }
-
             if (trackable.IsTracked)
             {
                 model.UntrackedSince = -1f;
@@ -156,12 +155,17 @@ public class QRCodeManager : MonoBehaviour
                     PlaceModelOnQRCode(model, trackable);
                     UpdateHealthBarPosition(model);
                 }
-                if (!model.Instance.activeSelf)
+                if (_hideModelWhenQRCodeNotTracked && !model.Instance.activeSelf)
                 {
                     model.Instance.SetActive(true);
                     SetHealthBarActive(model, true);
                     Debug.Log("<<< QRCode tracked again. Showing model. >>>");
                 }
+                continue;
+            }
+
+            if (!_hideModelWhenQRCodeNotTracked)
+            {
                 continue;
             }
 
@@ -228,8 +232,11 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
-        var instance = Instantiate(prefab);
-        instance.name = $"QRCodeModel({key})";
+        var instance = new GameObject($"QRCodeModel({key})");
+        var visual = Instantiate(prefab, instance.transform, false);
+        visual.name = prefab.name;
+        visual.transform.localPosition = Vector3.zero;
+        visual.transform.localRotation = Quaternion.Euler(GetModelRotationOffset(config));
 
         var health = GetHealth(config);
         var spawnedModel = new SpawnedQRCodeModel
@@ -292,6 +299,11 @@ public class QRCodeManager : MonoBehaviour
         }
 
         return config.Health;
+    }
+
+    private Vector3 GetModelRotationOffset(QRCodeModel config)
+    {
+        return config != null ? config.ModelRotationOffsetEuler : _modelUprightOffsetEuler;
     }
 
     private static string GetModelKey(string payload)
