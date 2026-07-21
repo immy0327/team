@@ -562,8 +562,8 @@ MonoBehaviour:
     Prefab: {fileID: 5436415929602374355, guid: 5443763e0f61f3a47ad3330db0a39f53, type: 3}
     Health: 100
     ModelRotationOffsetEuler: {x: 0, y: 0, z: 0}
-  - Key: tiger
-    Prefab: {fileID: 3068853791035469121, guid: a927ffc5826a01e4398349d966f991f9, type: 3}
+  - Key: Moster
+    Prefab: {fileID: 7030471043281703687, guid: 57c23d445f02066418a2d344bb385d1a, type: 3}
     Health: 90
     ModelRotationOffsetEuler: {x: 0, y: 0, z: 0}
   _hideModelWhenQRCodeNotTracked: 1
