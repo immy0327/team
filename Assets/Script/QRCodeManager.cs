@@ -26,6 +26,8 @@ public class QRCodeManager : MonoBehaviour
         public Image HealthBarDamageFillImage;
         public Text HealthBarText;
         public CanvasGroup HealthBarCanvasGroup;
+        public float HealthBarMaxFillWidth;
+        public float HealthBarFillHeight;
         public float HealthBarDisplayRatio = 1f;
         public float HealthBarDamageRatio = 1f;
         public string Key;
@@ -57,6 +59,12 @@ public class QRCodeManager : MonoBehaviour
 
     [SerializeField]
     private bool _hideModelWhenQRCodeNotTracked = true;
+
+    [SerializeField]
+    private bool _keepModelsAfterFirstScan = true;
+
+    [SerializeField]
+    private bool _anchorModelOnlyOnFirstScan = true;
 
     [SerializeField]
     private float _hideDelaySeconds = 0.5f;
@@ -172,13 +180,28 @@ public class QRCodeManager : MonoBehaviour
             var trackable = item.Key;
             var model = item.Value;
 
-            if (!trackable || model.Instance == null)
+            if (model.Instance == null)
             {
                 _trackablesToRemove.Add(trackable);
                 continue;
             }
 
+            if (!trackable)
+            {
+                if (_keepModelsAfterFirstScan)
+                {
+                    UpdateHealthBarPosition(model);
+                    UpdateHealthBar(model);
+                    FaceHealthBarToCamera(model);
+                    continue;
+                }
+
+                _trackablesToRemove.Add(trackable);
+                continue;
+            }
+
             UpdateHealthBarPosition(model);
+            UpdateHealthBar(model);
             FaceHealthBarToCamera(model);
 
             if (model.HasLost)
@@ -190,7 +213,7 @@ public class QRCodeManager : MonoBehaviour
             if (trackable.IsTracked)
             {
                 model.UntrackedSince = -1f;
-                if (anchorModelsToQRCodes)
+                if (anchorModelsToQRCodes && ShouldUpdateModelFromQRCode(model))
                 {
                     PlaceModelOnQRCode(model, trackable);
                     UpdateHealthBarPosition(model);
@@ -202,6 +225,17 @@ public class QRCodeManager : MonoBehaviour
                     SetModelAttacking(model, false);
                     Debug.Log("<<< QRCode tracked again. Showing model. >>>");
                 }
+                continue;
+            }
+
+            if (_keepModelsAfterFirstScan)
+            {
+                if (!model.Instance.activeSelf)
+                {
+                    model.Instance.SetActive(true);
+                    SetHealthBarActive(model, true);
+                }
+
                 continue;
             }
 
@@ -270,6 +304,12 @@ public class QRCodeManager : MonoBehaviour
         }
 
         var key = GetModelKey(trackable.MarkerPayloadString);
+        if (_keepModelsAfterFirstScan && HasSpawnedModelForKey(key))
+        {
+            Debug.Log($"<<< QRCode key already spawned and will stay visible: {key} >>>");
+            return;
+        }
+
         var config = GetModelForKey(key);
         var prefab = config?.Prefab ? config.Prefab : _qrCodeSpawnPrefab;
         if (!prefab)
@@ -302,6 +342,8 @@ public class QRCodeManager : MonoBehaviour
             HealthBarDamageFillImage = healthBarDamageFillImage,
             HealthBarText = healthBarText,
             HealthBarCanvasGroup = healthBarCanvasGroup,
+            HealthBarMaxFillWidth = healthBarFill.sizeDelta.x,
+            HealthBarFillHeight = healthBarFill.sizeDelta.y,
             Key = key,
             MaxHealth = health,
             CurrentHealth = health,
@@ -323,6 +365,12 @@ public class QRCodeManager : MonoBehaviour
     {
         if (trackable.TrackableType != OVRAnchor.TrackableType.QRCode)
         {
+            return;
+        }
+
+        if (_keepModelsAfterFirstScan)
+        {
+            Debug.Log("<<< QRCode removed, spawned model stays visible. >>>");
             return;
         }
 
@@ -350,6 +398,14 @@ public class QRCodeManager : MonoBehaviour
         }
 
         return null;
+    }
+
+    private bool HasSpawnedModelForKey(string key)
+    {
+        return _spawnedObjects.Values.Any(model =>
+            model.Instance &&
+            !model.HasLost &&
+            string.Equals(model.Key?.Trim(), key?.Trim(), StringComparison.OrdinalIgnoreCase));
     }
 
     private int GetHealth(QRCodeModel config)
@@ -403,42 +459,46 @@ public class QRCodeManager : MonoBehaviour
         canvasGroup = root.GetComponent<CanvasGroup>();
         canvasGroup.alpha = 1f;
 
-        var rootRect = root.GetComponent<RectTransform>();
-        rootRect.sizeDelta = new Vector2(180f, 54f);
+        var barWidth = Mathf.Max(80f, _healthBarWidth * 520f);
+        var frameWidth = barWidth + 28f;
+        var rootWidth = frameWidth + 14f;
 
-        var glow = CreateHealthBarImage(rootRect, "OuterGlow", new Color(0.05f, 0.9f, 1f, 0.22f), new Vector2(188f, 58f), Vector2.zero);
+        var rootRect = root.GetComponent<RectTransform>();
+        rootRect.sizeDelta = new Vector2(rootWidth, 54f);
+
+        var glow = CreateHealthBarImage(rootRect, "OuterGlow", new Color(0.05f, 0.9f, 1f, 0.22f), new Vector2(rootWidth + 8f, 58f), Vector2.zero);
         glow.raycastTarget = false;
 
-        var frame = CreateHealthBarImage(rootRect, "Frame", new Color(0.01f, 0.015f, 0.025f, 0.88f), new Vector2(174f, 46f), Vector2.zero);
+        var frame = CreateHealthBarImage(rootRect, "Frame", new Color(0.01f, 0.015f, 0.025f, 0.88f), new Vector2(frameWidth, 46f), Vector2.zero);
         var frameOutline = frame.gameObject.AddComponent<Outline>();
         frameOutline.effectColor = new Color(0.25f, 0.95f, 1f, 0.9f);
         frameOutline.effectDistance = new Vector2(1.2f, -1.2f);
 
-        var barBack = CreateHealthBarImage(rootRect, "BarBack", new Color(0.03f, 0.035f, 0.05f, 0.95f), new Vector2(146f, 18f), new Vector2(0f, -6f));
+        var barBack = CreateHealthBarImage(rootRect, "BarBack", new Color(0.03f, 0.035f, 0.05f, 0.95f), new Vector2(barWidth + 6f, 18f), new Vector2(0f, -6f));
         var backOutline = barBack.gameObject.AddComponent<Outline>();
         backOutline.effectColor = new Color(0f, 0f, 0f, 0.7f);
         backOutline.effectDistance = new Vector2(1f, -1f);
 
-        damageFillImage = CreateHealthBarImage(barBack.rectTransform, "DamageFill", new Color(1f, 0.28f, 0.08f, 0.9f), new Vector2(140f, 12f), Vector2.zero);
+        damageFillImage = CreateHealthBarImage(barBack.rectTransform, "DamageFill", new Color(1f, 0.28f, 0.08f, 0.9f), new Vector2(barWidth, 12f), Vector2.zero);
         damageFillImage.type = Image.Type.Filled;
         damageFillImage.fillMethod = Image.FillMethod.Horizontal;
         damageFillImage.fillOrigin = 0;
         damageFillImage.fillAmount = 1f;
         damageFillTransform = damageFillImage.rectTransform;
 
-        fillImage = CreateHealthBarImage(barBack.rectTransform, "HealthFill", new Color(0.1f, 1f, 0.45f, 1f), new Vector2(140f, 12f), Vector2.zero);
+        fillImage = CreateHealthBarImage(barBack.rectTransform, "HealthFill", new Color(0.1f, 1f, 0.45f, 1f), new Vector2(barWidth, 12f), Vector2.zero);
         fillImage.type = Image.Type.Filled;
         fillImage.fillMethod = Image.FillMethod.Horizontal;
         fillImage.fillOrigin = 0;
         fillImage.fillAmount = 1f;
         fillTransform = fillImage.rectTransform;
 
-        var shine = CreateHealthBarImage(barBack.rectTransform, "TopShine", new Color(1f, 1f, 1f, 0.22f), new Vector2(140f, 4f), new Vector2(0f, 4f));
+        var shine = CreateHealthBarImage(barBack.rectTransform, "TopShine", new Color(1f, 1f, 1f, 0.22f), new Vector2(barWidth, 4f), new Vector2(0f, 4f));
         shine.raycastTarget = false;
 
         for (var i = 1; i < 8; i++)
         {
-            var x = Mathf.Lerp(-70f, 70f, i / 8f);
+            var x = Mathf.Lerp(-barWidth * 0.5f, barWidth * 0.5f, i / 8f);
             var marker = CreateHealthBarImage(barBack.rectTransform, $"Segment{i}", new Color(0f, 0f, 0f, 0.28f), new Vector2(1.2f, 14f), new Vector2(x, 0f));
             marker.raycastTarget = false;
         }
@@ -527,6 +587,13 @@ public class QRCodeManager : MonoBehaviour
         }
     }
 
+    private bool ShouldUpdateModelFromQRCode(SpawnedQRCodeModel model)
+    {
+        return !_keepModelsAfterFirstScan ||
+               !_anchorModelOnlyOnFirstScan ||
+               !model.HasValidQRCodePose;
+    }
+
     private static void SetModelAttacking(SpawnedQRCodeModel model, bool attacking)
     {
         if (model == null || model.CombatControllers == null)
@@ -562,9 +629,15 @@ public class QRCodeManager : MonoBehaviour
     private int GetActiveFightableModelCount()
     {
         return _spawnedObjects.Count(item =>
-            item.Key && item.Key.IsTracked &&
-            item.Value.Instance && item.Value.Instance.activeSelf &&
-            !item.Value.HasLost);
+            IsFightableModelActive(item.Key, item.Value));
+    }
+
+    private bool IsFightableModelActive(MRUKTrackable trackable, SpawnedQRCodeModel model)
+    {
+        return model.Instance &&
+               model.Instance.activeSelf &&
+               !model.HasLost &&
+               (_keepModelsAfterFirstScan || (trackable && trackable.IsTracked));
     }
 
     private void PlaceModelOnQRCode(SpawnedQRCodeModel model, MRUKTrackable trackable)
@@ -669,7 +742,7 @@ public class QRCodeManager : MonoBehaviour
         }
 
         var activeModels = _spawnedObjects
-            .Where(item => item.Key && item.Key.IsTracked && item.Value.Instance && item.Value.Instance.activeSelf && !item.Value.HasLost)
+            .Where(item => IsFightableModelActive(item.Key, item.Value))
             .Select(item => item.Value)
             .ToList();
 
@@ -861,7 +934,47 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
-        model.HealthBarRoot.transform.position = model.Instance.transform.position + Vector3.up * _healthBarHeight;
+        model.HealthBarRoot.transform.position = GetHealthBarWorldPosition(model);
+    }
+
+    private Vector3 GetHealthBarWorldPosition(SpawnedQRCodeModel model)
+    {
+        if (!TryGetModelBounds(model.Instance, out var bounds))
+        {
+            return model.Instance.transform.position + Vector3.up * _healthBarHeight;
+        }
+
+        return new Vector3(bounds.center.x, bounds.max.y + _healthBarHeight, bounds.center.z);
+    }
+
+    private static bool TryGetModelBounds(GameObject modelRoot, out Bounds bounds)
+    {
+        bounds = default;
+        if (!modelRoot)
+        {
+            return false;
+        }
+
+        var renderers = modelRoot.GetComponentsInChildren<Renderer>(false);
+        var hasBounds = false;
+        foreach (var renderer in renderers)
+        {
+            if (!renderer || !renderer.enabled)
+            {
+                continue;
+            }
+
+            if (!hasBounds)
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+                continue;
+            }
+
+            bounds.Encapsulate(renderer.bounds);
+        }
+
+        return hasBounds;
     }
 
     private void UpdateHealthBar(SpawnedQRCodeModel model)
@@ -871,25 +984,30 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
-        var ratio = Mathf.Clamp01(model.CurrentHealth / Mathf.Max(1f, model.MaxHealth));
+        var maxHealth = Mathf.Max(1f, model.MaxHealth > 0f ? model.MaxHealth : _healthBarMaxValue);
+        var ratio = Mathf.Clamp01(model.CurrentHealth / maxHealth);
         model.HealthBarDisplayRatio = ratio;
         model.HealthBarDamageRatio = Mathf.MoveTowards(
             model.HealthBarDamageRatio,
             ratio,
             Mathf.Max(0.1f, _healthBarDamageLerpSpeed) * Time.deltaTime);
 
-        model.HealthBarFillImage.fillAmount = model.HealthBarDisplayRatio;
+        SetHealthBarFillWidth(model.HealthBarFill, model.HealthBarMaxFillWidth, model.HealthBarFillHeight, model.HealthBarDisplayRatio);
         model.HealthBarFillImage.color = GetHealthFillColor(ratio);
 
         if (model.HealthBarDamageFillImage)
         {
-            model.HealthBarDamageFillImage.fillAmount = Mathf.Max(model.HealthBarDamageRatio, ratio);
+            SetHealthBarFillWidth(
+                model.HealthBarDamageFill,
+                model.HealthBarMaxFillWidth,
+                model.HealthBarFillHeight,
+                Mathf.Max(model.HealthBarDamageRatio, ratio));
             model.HealthBarDamageFillImage.color = new Color(1f, 0.24f, 0.06f, ratio < 1f ? 0.9f : 0.25f);
         }
 
         if (model.HealthBarText)
         {
-            model.HealthBarText.text = $"HP {Mathf.CeilToInt(model.CurrentHealth)}/{Mathf.CeilToInt(model.MaxHealth)}";
+            model.HealthBarText.text = $"HP {Mathf.CeilToInt(model.CurrentHealth)}/{Mathf.CeilToInt(maxHealth)}";
         }
 
         if (model.HealthBarCanvasGroup)
@@ -898,6 +1016,20 @@ public class QRCodeManager : MonoBehaviour
             var pulse = isLowHealth ? Mathf.Abs(Mathf.Sin(Time.time * Mathf.Max(0.1f, _healthBarGlowPulseSpeed))) : 0f;
             model.HealthBarCanvasGroup.alpha = isLowHealth ? Mathf.Lerp(0.72f, 1f, pulse) : 1f;
         }
+    }
+
+    private static void SetHealthBarFillWidth(RectTransform fill, float maxWidth, float height, float ratio)
+    {
+        if (!fill)
+        {
+            return;
+        }
+
+        ratio = Mathf.Clamp01(ratio);
+        maxWidth = Mathf.Max(1f, maxWidth);
+        var width = maxWidth * ratio;
+        fill.sizeDelta = new Vector2(width, height);
+        fill.anchoredPosition = new Vector2(-maxWidth * (1f - ratio) * 0.5f, fill.anchoredPosition.y);
     }
 
     private static Color GetHealthFillColor(float ratio)
