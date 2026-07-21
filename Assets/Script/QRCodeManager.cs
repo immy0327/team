@@ -32,6 +32,7 @@ public class QRCodeManager : MonoBehaviour
         public Vector3 PendingQRCodePosition;
         public Quaternion PendingQRCodeRotation = Quaternion.identity;
         public float PendingQRCodeSince = -1f;
+        public PlayerCombat[] CombatControllers;
     }
 
     [SerializeField]
@@ -162,6 +163,7 @@ public class QRCodeManager : MonoBehaviour
 
             if (model.HasLost)
             {
+                SetModelAttacking(model, false);
                 continue;
             }
 
@@ -177,6 +179,7 @@ public class QRCodeManager : MonoBehaviour
                 {
                     model.Instance.SetActive(true);
                     SetHealthBarActive(model, true);
+                    SetModelAttacking(model, false);
                     Debug.Log("<<< QRCode tracked again. Showing model. >>>");
                 }
                 continue;
@@ -194,6 +197,7 @@ public class QRCodeManager : MonoBehaviour
 
             if (Time.time - model.UntrackedSince >= _hideDelaySeconds && model.Instance.activeSelf)
             {
+                SetModelAttacking(model, false);
                 model.Instance.SetActive(false);
                 SetHealthBarActive(model, false);
                 Debug.Log("<<< QRCode not tracked. Hiding model. >>>");
@@ -202,6 +206,10 @@ public class QRCodeManager : MonoBehaviour
 
         foreach (var trackable in _trackablesToRemove)
         {
+            if (_spawnedObjects.TryGetValue(trackable, out var model))
+            {
+                SetModelAttacking(model, false);
+            }
             _spawnedObjects.Remove(trackable);
         }
 
@@ -264,7 +272,8 @@ public class QRCodeManager : MonoBehaviour
             HealthBarFill = healthBarFill,
             Key = key,
             MaxHealth = health,
-            CurrentHealth = health
+            CurrentHealth = health,
+            CombatControllers = visual.GetComponentsInChildren<PlayerCombat>(true)
         };
         _spawnedObjects[trackable] = spawnedModel;
         PlaceModelOnQRCode(spawnedModel, trackable);
@@ -272,6 +281,7 @@ public class QRCodeManager : MonoBehaviour
 
         _battleReadyTime = -1f;
         _battleInProgress = false;
+        SetAllModelsAttacking(false);
 
         Debug.Log($"<<< Spawned model for QRCode key: {key}, health: {health} >>>");
     }
@@ -409,6 +419,38 @@ public class QRCodeManager : MonoBehaviour
         }
     }
 
+    private static void SetModelAttacking(SpawnedQRCodeModel model, bool attacking)
+    {
+        if (model == null || model.CombatControllers == null)
+        {
+            return;
+        }
+
+        foreach (var combat in model.CombatControllers)
+        {
+            if (combat != null)
+            {
+                combat.SetBattleAttacking(attacking);
+            }
+        }
+    }
+
+    private static void SetModelsAttacking(IEnumerable<SpawnedQRCodeModel> models, bool attacking)
+    {
+        foreach (var model in models)
+        {
+            SetModelAttacking(model, attacking);
+        }
+    }
+
+    private void SetAllModelsAttacking(bool attacking)
+    {
+        foreach (var model in _spawnedObjects.Values)
+        {
+            SetModelAttacking(model, attacking);
+        }
+    }
+
     private int GetActiveFightableModelCount()
     {
         return _spawnedObjects.Count(item =>
@@ -513,6 +555,7 @@ public class QRCodeManager : MonoBehaviour
     {
         if (!_enableBattle)
         {
+            SetAllModelsAttacking(false);
             _battleInProgress = false;
             return;
         }
@@ -524,6 +567,7 @@ public class QRCodeManager : MonoBehaviour
 
         if (activeModels.Count < 2)
         {
+            SetAllModelsAttacking(false);
             _battleReadyTime = -1f;
             _battleInProgress = false;
             return;
@@ -540,6 +584,7 @@ public class QRCodeManager : MonoBehaviour
 
         if (!_battleInProgress && _moveModelsTogetherBeforeBattle && !AreModelsCloseEnough(activeModels))
         {
+            SetModelsAttacking(activeModels, false);
             _battleReadyTime = -1f;
             MoveModelsTowardCenter(activeModels);
             return;
@@ -547,6 +592,7 @@ public class QRCodeManager : MonoBehaviour
 
         if (!_battleInProgress && _battleReadyTime < 0f)
         {
+            SetModelsAttacking(activeModels, false);
             _battleReadyTime = Time.time + _battleStartDelaySeconds;
             Debug.Log("<<< Battle ready. Fighting soon. >>>");
             return;
@@ -554,13 +600,19 @@ public class QRCodeManager : MonoBehaviour
 
         if (!_battleInProgress && Time.time < _battleReadyTime)
         {
+            SetModelsAttacking(activeModels, false);
             return;
         }
 
         if (!_battleInProgress)
         {
             _battleInProgress = true;
+            SetModelsAttacking(activeModels, true);
             Debug.Log("<<< Battle started. Health bars are decreasing. >>>");
+        }
+        else
+        {
+            SetModelsAttacking(activeModels, true);
         }
 
         var damage = Mathf.Max(0f, _battleDamagePerSecond) * Time.deltaTime;
@@ -575,6 +627,7 @@ public class QRCodeManager : MonoBehaviour
             }
 
             model.HasLost = true;
+            SetModelAttacking(model, false);
             if (model.Instance)
             {
                 model.Instance.SetActive(false);
@@ -586,12 +639,14 @@ public class QRCodeManager : MonoBehaviour
         var survivors = activeModels.Where(model => !model.HasLost && model.CurrentHealth > 0f).ToList();
         if (survivors.Count == 1)
         {
+            SetModelsAttacking(activeModels, false);
             Debug.Log($"<<< {survivors[0].Key} wins with health {survivors[0].CurrentHealth:0}! >>>");
             _battleReadyTime = -1f;
             _battleInProgress = false;
         }
         else if (survivors.Count == 0)
         {
+            SetModelsAttacking(activeModels, false);
             Debug.Log("<<< Battle ended in a draw. >>>");
             _battleReadyTime = -1f;
             _battleInProgress = false;
@@ -720,6 +775,8 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
+        SetModelAttacking(model, false);
+
         if (model.HealthBarRoot)
         {
             Destroy(model.HealthBarRoot);
@@ -742,6 +799,8 @@ public class QRCodeManager : MonoBehaviour
         }
         foreach (var model in _spawnedObjects.Values)
         {
+            SetModelAttacking(model, false);
+
             if (model.HealthBarRoot)
             {
                 Destroy(model.HealthBarRoot);

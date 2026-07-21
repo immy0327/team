@@ -1,6 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.VFX; // 必須引用此命名空間
+using UnityEngine.VFX;
 using System.Collections;
 
 [RequireComponent(typeof(Animator))]
@@ -8,61 +8,164 @@ public class PlayerCombat : MonoBehaviour
 {
     [Header("Settings")]
     [SerializeField] private float attackCooldown = 1.0f;
+    [SerializeField] private string idleStateName = "Monster_Fighting_Ide";
+    [SerializeField] private float idleTransitionDuration = 0.1f;
+    [SerializeField] private bool allowKeyboardAttack = true;
 
     [Header("Visual Effects")]
-    [Tooltip("傳統粒子特效")]
     [SerializeField] private ParticleSystem[] attackParticles;
-
-    [Tooltip("VFX Graph 特效")]
     [SerializeField] private VisualEffect[] attackVfxs;
 
     private Animator animator;
     private bool isAttacking;
+    private bool autoAttack;
+    private Coroutine attackCooldownRoutine;
     private readonly int attackHash = Animator.StringToHash("Attack");
+    private int idleStateHash;
 
-    void Start()
+    private void Awake()
     {
         animator = GetComponent<Animator>();
+        idleStateHash = Animator.StringToHash(idleStateName);
+        StopAttackEffects();
     }
 
-    void Update()
+    private void OnEnable()
     {
-        Keyboard keyboard = Keyboard.current;
-        if (keyboard != null && keyboard.spaceKey.wasPressedThisFrame && !isAttacking)
+        if (!autoAttack)
         {
-            animator.SetTrigger(attackHash);
-            StartCoroutine(ResetAttack());
+            ReturnToIdle();
+            StopAttackEffects();
         }
     }
 
-    // --- 給 Animation Event 呼叫的函數 ---
+    private void OnDisable()
+    {
+        autoAttack = false;
+        isAttacking = false;
+
+        if (attackCooldownRoutine != null)
+        {
+            StopCoroutine(attackCooldownRoutine);
+            attackCooldownRoutine = null;
+        }
+
+        StopAttackEffects();
+    }
+
+    private void Update()
+    {
+        Keyboard keyboard = Keyboard.current;
+        if (allowKeyboardAttack && keyboard != null && keyboard.spaceKey.wasPressedThisFrame)
+        {
+            TryStartAttack();
+        }
+
+        if (autoAttack)
+        {
+            TryStartAttack();
+        }
+    }
+
+    public void SetBattleAttacking(bool attacking)
+    {
+        if (autoAttack == attacking)
+        {
+            return;
+        }
+
+        autoAttack = attacking;
+        if (autoAttack)
+        {
+            TryStartAttack();
+            return;
+        }
+
+        if (attackCooldownRoutine != null)
+        {
+            StopCoroutine(attackCooldownRoutine);
+            attackCooldownRoutine = null;
+        }
+
+        isAttacking = false;
+        animator.ResetTrigger(attackHash);
+        ReturnToIdle();
+        StopAttackEffects();
+    }
+
+    public void ReturnToIdle()
+    {
+        if (!animator || !animator.runtimeAnimatorController)
+        {
+            return;
+        }
+
+        if (!animator.HasState(0, idleStateHash))
+        {
+            return;
+        }
+
+        animator.CrossFade(idleStateHash, idleTransitionDuration, 0, 0f);
+    }
+
     public void PlayAttackEffects()
     {
-        // 處理 ParticleSystem
         if (attackParticles != null)
         {
             foreach (ParticleSystem ps in attackParticles)
             {
                 if (ps != null)
                 {
-                    ps.Stop();
+                    ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
                     ps.Play();
                 }
             }
         }
 
-        // 處理 VFX Graph
         if (attackVfxs != null)
         {
             foreach (VisualEffect vfx in attackVfxs)
             {
                 if (vfx != null)
                 {
-                    // 若特效有設定 Spawn 規則，直接呼叫 Play() 即可
+                    vfx.Stop();
                     vfx.Play();
+                }
+            }
+        }
+    }
 
-                    // 如果你的 VFX 是透過 Event 觸發 (例如 "OnPlay")，請改用下面這行：
-                    // vfx.SendEvent("OnPlay");
+    private void TryStartAttack()
+    {
+        if (isAttacking)
+        {
+            return;
+        }
+
+        animator.SetTrigger(attackHash);
+        attackCooldownRoutine = StartCoroutine(ResetAttack());
+    }
+
+    private void StopAttackEffects()
+    {
+        if (attackParticles != null)
+        {
+            foreach (ParticleSystem ps in attackParticles)
+            {
+                if (ps != null)
+                {
+                    ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+                }
+            }
+        }
+
+        if (attackVfxs != null)
+        {
+            foreach (VisualEffect vfx in attackVfxs)
+            {
+                if (vfx != null)
+                {
+                    vfx.Stop();
                 }
             }
         }
@@ -73,5 +176,6 @@ public class PlayerCombat : MonoBehaviour
         isAttacking = true;
         yield return new WaitForSeconds(attackCooldown);
         isAttacking = false;
+        attackCooldownRoutine = null;
     }
 }
