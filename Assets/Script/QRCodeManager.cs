@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class QRCodeManager : MonoBehaviour
 {
@@ -19,7 +20,14 @@ public class QRCodeManager : MonoBehaviour
     {
         public GameObject Instance;
         public GameObject HealthBarRoot;
-        public Transform HealthBarFill;
+        public RectTransform HealthBarFill;
+        public RectTransform HealthBarDamageFill;
+        public Image HealthBarFillImage;
+        public Image HealthBarDamageFillImage;
+        public Text HealthBarText;
+        public CanvasGroup HealthBarCanvasGroup;
+        public float HealthBarDisplayRatio = 1f;
+        public float HealthBarDamageRatio = 1f;
         public string Key;
         public float MaxHealth;
         public float CurrentHealth;
@@ -106,6 +114,18 @@ public class QRCodeManager : MonoBehaviour
 
     [SerializeField]
     private float _healthBarMaxValue = 100f;
+
+    [SerializeField]
+    private float _healthBarUiScale = 0.002f;
+
+    [SerializeField]
+    private float _healthBarDamageLerpSpeed = 5f;
+
+    [SerializeField]
+    private float _healthBarGlowPulseSpeed = 4f;
+
+    [SerializeField]
+    private float _lowHealthPulseThreshold = 0.3f;
 
     private static QRCodeManager s_instance;
     private readonly Dictionary<MRUKTrackable, SpawnedQRCodeModel> _spawnedObjects = new Dictionary<MRUKTrackable, SpawnedQRCodeModel>();
@@ -268,8 +288,20 @@ public class QRCodeManager : MonoBehaviour
         var spawnedModel = new SpawnedQRCodeModel
         {
             Instance = instance,
-            HealthBarRoot = CreateHealthBar(health, out var healthBarFill),
+            HealthBarRoot = CreateHealthBar(
+                health,
+                out var healthBarFill,
+                out var healthBarDamageFill,
+                out var healthBarFillImage,
+                out var healthBarDamageFillImage,
+                out var healthBarText,
+                out var healthBarCanvasGroup),
             HealthBarFill = healthBarFill,
+            HealthBarDamageFill = healthBarDamageFill,
+            HealthBarFillImage = healthBarFillImage,
+            HealthBarDamageFillImage = healthBarDamageFillImage,
+            HealthBarText = healthBarText,
+            HealthBarCanvasGroup = healthBarCanvasGroup,
             Key = key,
             MaxHealth = health,
             CurrentHealth = health,
@@ -278,6 +310,7 @@ public class QRCodeManager : MonoBehaviour
         _spawnedObjects[trackable] = spawnedModel;
         PlaceModelOnQRCode(spawnedModel, trackable);
         UpdateHealthBarPosition(spawnedModel);
+        UpdateHealthBar(spawnedModel);
 
         _battleReadyTime = -1f;
         _battleInProgress = false;
@@ -351,50 +384,125 @@ public class QRCodeManager : MonoBehaviour
         return payload;
     }
 
-    private GameObject CreateHealthBar(int health, out Transform fillTransform)
+    private GameObject CreateHealthBar(
+        int health,
+        out RectTransform fillTransform,
+        out RectTransform damageFillTransform,
+        out Image fillImage,
+        out Image damageFillImage,
+        out Text healthText,
+        out CanvasGroup canvasGroup)
     {
-        var root = new GameObject($"HealthBar({health})");
+        var root = new GameObject($"HealthBar({health})", typeof(RectTransform), typeof(Canvas), typeof(CanvasGroup));
+        root.transform.localScale = Vector3.one * Mathf.Max(0.0001f, _healthBarUiScale);
 
-        var background = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        background.name = "HealthBarBackground";
-        background.transform.SetParent(root.transform, false);
-        background.transform.localScale = new Vector3(_healthBarWidth, 0.035f, 0.01f);
-        SetPrimitiveColor(background, Color.gray);
+        var canvas = root.GetComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.sortingOrder = 50;
 
-        var fill = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        fill.name = "HealthBarFill";
-        fill.transform.SetParent(root.transform, false);
+        canvasGroup = root.GetComponent<CanvasGroup>();
+        canvasGroup.alpha = 1f;
 
-        var ratio = Mathf.Clamp01(health / Mathf.Max(1f, _healthBarMaxValue));
-        fill.transform.localScale = new Vector3(_healthBarWidth * ratio, 0.022f, 0.014f);
-        fill.transform.localPosition = new Vector3(-(_healthBarWidth * (1f - ratio)) * 0.5f, 0f, -0.012f);
-        SetPrimitiveColor(fill, Color.green);
+        var rootRect = root.GetComponent<RectTransform>();
+        rootRect.sizeDelta = new Vector2(180f, 54f);
 
-        fillTransform = fill.transform;
+        var glow = CreateHealthBarImage(rootRect, "OuterGlow", new Color(0.05f, 0.9f, 1f, 0.22f), new Vector2(188f, 58f), Vector2.zero);
+        glow.raycastTarget = false;
+
+        var frame = CreateHealthBarImage(rootRect, "Frame", new Color(0.01f, 0.015f, 0.025f, 0.88f), new Vector2(174f, 46f), Vector2.zero);
+        var frameOutline = frame.gameObject.AddComponent<Outline>();
+        frameOutline.effectColor = new Color(0.25f, 0.95f, 1f, 0.9f);
+        frameOutline.effectDistance = new Vector2(1.2f, -1.2f);
+
+        var barBack = CreateHealthBarImage(rootRect, "BarBack", new Color(0.03f, 0.035f, 0.05f, 0.95f), new Vector2(146f, 18f), new Vector2(0f, -6f));
+        var backOutline = barBack.gameObject.AddComponent<Outline>();
+        backOutline.effectColor = new Color(0f, 0f, 0f, 0.7f);
+        backOutline.effectDistance = new Vector2(1f, -1f);
+
+        damageFillImage = CreateHealthBarImage(barBack.rectTransform, "DamageFill", new Color(1f, 0.28f, 0.08f, 0.9f), new Vector2(140f, 12f), Vector2.zero);
+        damageFillImage.type = Image.Type.Filled;
+        damageFillImage.fillMethod = Image.FillMethod.Horizontal;
+        damageFillImage.fillOrigin = 0;
+        damageFillImage.fillAmount = 1f;
+        damageFillTransform = damageFillImage.rectTransform;
+
+        fillImage = CreateHealthBarImage(barBack.rectTransform, "HealthFill", new Color(0.1f, 1f, 0.45f, 1f), new Vector2(140f, 12f), Vector2.zero);
+        fillImage.type = Image.Type.Filled;
+        fillImage.fillMethod = Image.FillMethod.Horizontal;
+        fillImage.fillOrigin = 0;
+        fillImage.fillAmount = 1f;
+        fillTransform = fillImage.rectTransform;
+
+        var shine = CreateHealthBarImage(barBack.rectTransform, "TopShine", new Color(1f, 1f, 1f, 0.22f), new Vector2(140f, 4f), new Vector2(0f, 4f));
+        shine.raycastTarget = false;
+
+        for (var i = 1; i < 8; i++)
+        {
+            var x = Mathf.Lerp(-70f, 70f, i / 8f);
+            var marker = CreateHealthBarImage(barBack.rectTransform, $"Segment{i}", new Color(0f, 0f, 0f, 0.28f), new Vector2(1.2f, 14f), new Vector2(x, 0f));
+            marker.raycastTarget = false;
+        }
+
+        healthText = CreateHealthBarText(rootRect, "HealthText", $"HP {health}/{health}", new Vector2(0f, 13f));
+
         return root;
     }
 
-    private static void SetPrimitiveColor(GameObject obj, Color color)
+    private static Image CreateHealthBarImage(RectTransform parent, string name, Color color, Vector2 size, Vector2 anchoredPosition)
     {
-        if (obj.TryGetComponent<Collider>(out var collider))
+        var obj = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+        obj.transform.SetParent(parent, false);
+
+        var rectTransform = obj.GetComponent<RectTransform>();
+        rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+        rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+        rectTransform.pivot = new Vector2(0.5f, 0.5f);
+        rectTransform.sizeDelta = size;
+        rectTransform.anchoredPosition = anchoredPosition;
+
+        var image = obj.GetComponent<Image>();
+        image.color = color;
+        image.raycastTarget = false;
+        return image;
+    }
+
+    private static Text CreateHealthBarText(RectTransform parent, string name, string text, Vector2 anchoredPosition)
+    {
+        var obj = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Text), typeof(Outline));
+        obj.transform.SetParent(parent, false);
+
+        var rectTransform = obj.GetComponent<RectTransform>();
+        rectTransform.anchorMin = new Vector2(0.5f, 0.5f);
+        rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+        rectTransform.pivot = new Vector2(0.5f, 0.5f);
+        rectTransform.sizeDelta = new Vector2(150f, 18f);
+        rectTransform.anchoredPosition = anchoredPosition;
+
+        var label = obj.GetComponent<Text>();
+        label.font = GetBuiltInFont();
+        label.text = text;
+        label.alignment = TextAnchor.MiddleCenter;
+        label.fontSize = 14;
+        label.fontStyle = FontStyle.Bold;
+        label.color = new Color(0.92f, 1f, 1f, 1f);
+        label.raycastTarget = false;
+
+        var outline = obj.GetComponent<Outline>();
+        outline.effectColor = new Color(0f, 0f, 0f, 0.9f);
+        outline.effectDistance = new Vector2(1f, -1f);
+
+        return label;
+    }
+
+    private static Font GetBuiltInFont()
+    {
+        var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        if (!font)
         {
-            Destroy(collider);
+            font = Resources.GetBuiltinResource<Font>("Arial.ttf");
         }
 
-        if (obj.TryGetComponent<Renderer>(out var renderer))
-        {
-            var shader = Shader.Find("Universal Render Pipeline/Lit");
-            if (!shader)
-            {
-                shader = Shader.Find("Standard");
-            }
-            if (!shader)
-            {
-                return;
-            }
-            renderer.material = new Material(shader);
-            renderer.material.color = color;
-        }
+        return font;
     }
 
     private void FaceHealthBarToCamera(SpawnedQRCodeModel model)
@@ -758,14 +866,49 @@ public class QRCodeManager : MonoBehaviour
 
     private void UpdateHealthBar(SpawnedQRCodeModel model)
     {
-        if (!model.HealthBarFill)
+        if (!model.HealthBarFillImage)
         {
             return;
         }
 
-        var ratio = Mathf.Clamp01(model.CurrentHealth / Mathf.Max(1f, _healthBarMaxValue));
-        model.HealthBarFill.localScale = new Vector3(_healthBarWidth * ratio, 0.022f, 0.014f);
-        model.HealthBarFill.localPosition = new Vector3(-(_healthBarWidth * (1f - ratio)) * 0.5f, 0f, -0.012f);
+        var ratio = Mathf.Clamp01(model.CurrentHealth / Mathf.Max(1f, model.MaxHealth));
+        model.HealthBarDisplayRatio = ratio;
+        model.HealthBarDamageRatio = Mathf.MoveTowards(
+            model.HealthBarDamageRatio,
+            ratio,
+            Mathf.Max(0.1f, _healthBarDamageLerpSpeed) * Time.deltaTime);
+
+        model.HealthBarFillImage.fillAmount = model.HealthBarDisplayRatio;
+        model.HealthBarFillImage.color = GetHealthFillColor(ratio);
+
+        if (model.HealthBarDamageFillImage)
+        {
+            model.HealthBarDamageFillImage.fillAmount = Mathf.Max(model.HealthBarDamageRatio, ratio);
+            model.HealthBarDamageFillImage.color = new Color(1f, 0.24f, 0.06f, ratio < 1f ? 0.9f : 0.25f);
+        }
+
+        if (model.HealthBarText)
+        {
+            model.HealthBarText.text = $"HP {Mathf.CeilToInt(model.CurrentHealth)}/{Mathf.CeilToInt(model.MaxHealth)}";
+        }
+
+        if (model.HealthBarCanvasGroup)
+        {
+            var isLowHealth = ratio <= Mathf.Clamp01(_lowHealthPulseThreshold);
+            var pulse = isLowHealth ? Mathf.Abs(Mathf.Sin(Time.time * Mathf.Max(0.1f, _healthBarGlowPulseSpeed))) : 0f;
+            model.HealthBarCanvasGroup.alpha = isLowHealth ? Mathf.Lerp(0.72f, 1f, pulse) : 1f;
+        }
+    }
+
+    private static Color GetHealthFillColor(float ratio)
+    {
+        var danger = new Color(1f, 0.08f, 0.05f, 1f);
+        var warning = new Color(1f, 0.78f, 0.08f, 1f);
+        var healthy = new Color(0.1f, 1f, 0.45f, 1f);
+
+        return ratio < 0.5f
+            ? Color.Lerp(danger, warning, ratio * 2f)
+            : Color.Lerp(warning, healthy, (ratio - 0.5f) * 2f);
     }
 
     private void DestroySpawnedModel(MRUKTrackable trackable)
