@@ -16,6 +16,17 @@ public class QRCodeManager : MonoBehaviour
         public Vector3 ModelRotationOffsetEuler;
     }
 
+    public struct NetworkBattleSnapshot
+    {
+        public string SpawnId;
+        public Vector3 Position;
+        public Quaternion Rotation;
+        public float CurrentHealth;
+        public float MaxHealth;
+        public bool HasLost;
+        public bool IsAttacking;
+    }
+
     private class SpawnedQRCodeModel
     {
         public GameObject Instance;
@@ -30,6 +41,8 @@ public class QRCodeManager : MonoBehaviour
         public float HealthBarFillHeight;
         public float HealthBarDisplayRatio = 1f;
         public float HealthBarDamageRatio = 1f;
+        public string SpawnId;
+        public ulong OwnerClientId;
         public string Key;
         public float MaxHealth;
         public float CurrentHealth;
@@ -137,6 +150,7 @@ public class QRCodeManager : MonoBehaviour
 
     private static QRCodeManager s_instance;
     private readonly Dictionary<MRUKTrackable, SpawnedQRCodeModel> _spawnedObjects = new Dictionary<MRUKTrackable, SpawnedQRCodeModel>();
+    private readonly List<SpawnedQRCodeModel> _networkSpawnedObjects = new List<SpawnedQRCodeModel>();
     private readonly List<MRUKTrackable> _trackablesToRemove = new List<MRUKTrackable>();
     private float _battleReadyTime = -1f;
     private bool _battleInProgress;
@@ -267,7 +281,27 @@ public class QRCodeManager : MonoBehaviour
             _spawnedObjects.Remove(trackable);
         }
 
-        TryResolveBattle();
+        foreach (var model in _networkSpawnedObjects)
+        {
+            if (model.Instance == null)
+            {
+                continue;
+            }
+
+            UpdateHealthBarPosition(model);
+            UpdateHealthBar(model);
+            FaceHealthBarToCamera(model);
+
+            if (model.HasLost)
+            {
+                SetModelAttacking(model, false);
+            }
+        }
+
+        if (ShouldRunBattleSimulation())
+        {
+            TryResolveBattle();
+        }
     }
 
     private void OnTrackableAdded(MRUKTrackable trackable)
@@ -304,7 +338,10 @@ public class QRCodeManager : MonoBehaviour
         }
 
         var key = GetModelKey(trackable.MarkerPayloadString);
-        if (_keepModelsAfterFirstScan && HasSpawnedModelForKey(key))
+        var multiplayer = MultiplayerQRCodeSession.Instance;
+        if (_keepModelsAfterFirstScan &&
+            ((!multiplayer.IsNetworkActive && HasSpawnedModelForKey(key)) ||
+             (multiplayer.IsNetworkActive && HasSpawnedModelForSpawnId($"{multiplayer.LocalClientId}:{key}"))))
         {
             Debug.Log($"<<< QRCode key already spawned and will stay visible: {key} >>>");
             return;
@@ -318,15 +355,37 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
+        var health = GetHealth(config);
+        var spawnPosition = trackable.transform.position + Vector3.up * _modelVerticalOffset;
+        var spawnRotation = GetUprightRotation(trackable.transform.rotation);
+
+        if (multiplayer.IsNetworkActive)
+        {
+            multiplayer.RequestSpawnModel(key, spawnPosition, spawnRotation, health);
+            return;
+        }
+
+        SpawnLocalModel(key, config, prefab, spawnPosition, spawnRotation, health, trackable);
+    }
+
+    private SpawnedQRCodeModel SpawnLocalModel(
+        string key,
+        QRCodeModel config,
+        GameObject prefab,
+        Vector3 position,
+        Quaternion rotation,
+        int health,
+        MRUKTrackable trackable)
+    {
         var instance = new GameObject($"QRCodeModel({key})");
         var visual = Instantiate(prefab, instance.transform, false);
         visual.name = prefab.name;
         visual.transform.localPosition = Vector3.zero;
         visual.transform.localRotation = Quaternion.Euler(GetModelRotationOffset(config));
 
-        var health = GetHealth(config);
         var spawnedModel = new SpawnedQRCodeModel
         {
+            SpawnId = trackable ? trackable.GetInstanceID().ToString() : key,
             Instance = instance,
             HealthBarRoot = CreateHealthBar(
                 health,
@@ -349,8 +408,18 @@ public class QRCodeManager : MonoBehaviour
             CurrentHealth = health,
             CombatControllers = visual.GetComponentsInChildren<PlayerCombat>(true)
         };
-        _spawnedObjects[trackable] = spawnedModel;
-        PlaceModelOnQRCode(spawnedModel, trackable);
+
+        instance.transform.SetPositionAndRotation(position, rotation);
+        spawnedModel.LastQRCodePosition = position;
+        spawnedModel.LastQRCodeRotation = rotation;
+        spawnedModel.HasValidQRCodePose = true;
+        spawnedModel.StandingRotationOffset = GetStandingRotationOffset(instance.transform.rotation);
+
+        if (trackable)
+        {
+            _spawnedObjects[trackable] = spawnedModel;
+        }
+
         UpdateHealthBarPosition(spawnedModel);
         UpdateHealthBar(spawnedModel);
 
@@ -359,6 +428,7 @@ public class QRCodeManager : MonoBehaviour
         SetAllModelsAttacking(false);
 
         Debug.Log($"<<< Spawned model for QRCode key: {key}, health: {health} >>>");
+        return spawnedModel;
     }
 
     public void OnTrackableRemoved(MRUKTrackable trackable)
@@ -402,10 +472,131 @@ public class QRCodeManager : MonoBehaviour
 
     private bool HasSpawnedModelForKey(string key)
     {
-        return _spawnedObjects.Values.Any(model =>
+        return GetAllSpawnedModels().Any(model =>
             model.Instance &&
             !model.HasLost &&
             string.Equals(model.Key?.Trim(), key?.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool HasSpawnedModelForSpawnId(string spawnId)
+    {
+        return GetAllSpawnedModels().Any(model =>
+            model.Instance &&
+            !model.HasLost &&
+            string.Equals(model.SpawnId, spawnId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public void SpawnNetworkedModel(string spawnId, string key, Vector3 position, Quaternion rotation, int health, ulong ownerClientId)
+    {
+        if (HasSpawnedModelForSpawnId(spawnId))
+        {
+            return;
+        }
+
+        var config = GetModelForKey(key);
+        var prefab = config?.Prefab ? config.Prefab : _qrCodeSpawnPrefab;
+        if (!prefab)
+        {
+            Debug.LogWarning($"<<< No prefab found for network QRCode key: {key} >>>");
+            return;
+        }
+
+        var spawnedModel = SpawnLocalModel(key, config, prefab, position, rotation, health, null);
+        spawnedModel.SpawnId = spawnId;
+        spawnedModel.OwnerClientId = ownerClientId;
+        _networkSpawnedObjects.Add(spawnedModel);
+        Debug.Log($"<<< Network spawned QRCode model: {spawnId}, key: {key} >>>");
+    }
+
+    public List<NetworkBattleSnapshot> GetNetworkBattleSnapshots()
+    {
+        var snapshots = new List<NetworkBattleSnapshot>();
+        foreach (var model in GetAllSpawnedModels())
+        {
+            if (!model.Instance)
+            {
+                continue;
+            }
+
+            snapshots.Add(new NetworkBattleSnapshot
+            {
+                SpawnId = model.SpawnId,
+                Position = model.Instance.transform.position,
+                Rotation = model.Instance.transform.rotation,
+                CurrentHealth = model.CurrentHealth,
+                MaxHealth = model.MaxHealth,
+                HasLost = model.HasLost,
+                IsAttacking = _battleInProgress && !model.HasLost && model.CurrentHealth > 0f
+            });
+        }
+
+        return snapshots;
+    }
+
+    public void ApplyNetworkBattleSnapshot(
+        string spawnId,
+        Vector3 position,
+        Quaternion rotation,
+        float currentHealth,
+        float maxHealth,
+        bool hasLost,
+        bool isAttacking)
+    {
+        var model = FindSpawnedModelBySpawnId(spawnId);
+        if (model == null || !model.Instance)
+        {
+            return;
+        }
+
+        model.Instance.transform.SetPositionAndRotation(position, rotation);
+        model.CurrentHealth = Mathf.Clamp(currentHealth, 0f, Mathf.Max(1f, maxHealth));
+        model.MaxHealth = Mathf.Max(1f, maxHealth);
+        model.HasLost = hasLost;
+
+        if (hasLost)
+        {
+            SetModelAttacking(model, false);
+            model.Instance.SetActive(false);
+            SetHealthBarActive(model, false);
+            UpdateHealthBar(model);
+            return;
+        }
+
+        if (!model.Instance.activeSelf)
+        {
+            model.Instance.SetActive(true);
+        }
+
+        SetHealthBarActive(model, true);
+        SetModelAttacking(model, isAttacking);
+        UpdateHealthBarPosition(model);
+        UpdateHealthBar(model);
+    }
+
+    private IEnumerable<SpawnedQRCodeModel> GetAllSpawnedModels()
+    {
+        foreach (var model in _spawnedObjects.Values)
+        {
+            yield return model;
+        }
+
+        foreach (var model in _networkSpawnedObjects)
+        {
+            yield return model;
+        }
+    }
+
+    private SpawnedQRCodeModel FindSpawnedModelBySpawnId(string spawnId)
+    {
+        return GetAllSpawnedModels().FirstOrDefault(model =>
+            model.Instance &&
+            string.Equals(model.SpawnId, spawnId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool ShouldRunBattleSimulation()
+    {
+        var multiplayer = MultiplayerQRCodeSession.Instance;
+        return !multiplayer.IsNetworkActive || multiplayer.IsServer;
     }
 
     private int GetHealth(QRCodeModel config)
@@ -620,7 +811,7 @@ public class QRCodeManager : MonoBehaviour
 
     private void SetAllModelsAttacking(bool attacking)
     {
-        foreach (var model in _spawnedObjects.Values)
+        foreach (var model in GetAllSpawnedModels())
         {
             SetModelAttacking(model, attacking);
         }
@@ -628,8 +819,21 @@ public class QRCodeManager : MonoBehaviour
 
     private int GetActiveFightableModelCount()
     {
-        return _spawnedObjects.Count(item =>
-            IsFightableModelActive(item.Key, item.Value));
+        return GetAllSpawnedModels().Count(model =>
+            IsFightableModelActive(GetTrackableForModel(model), model));
+    }
+
+    private MRUKTrackable GetTrackableForModel(SpawnedQRCodeModel model)
+    {
+        foreach (var item in _spawnedObjects)
+        {
+            if (ReferenceEquals(item.Value, model))
+            {
+                return item.Key;
+            }
+        }
+
+        return null;
     }
 
     private bool IsFightableModelActive(MRUKTrackable trackable, SpawnedQRCodeModel model)
@@ -741,9 +945,8 @@ public class QRCodeManager : MonoBehaviour
             return;
         }
 
-        var activeModels = _spawnedObjects
-            .Where(item => IsFightableModelActive(item.Key, item.Value))
-            .Select(item => item.Value)
+        var activeModels = GetAllSpawnedModels()
+            .Where(model => IsFightableModelActive(GetTrackableForModel(model), model))
             .ToList();
 
         if (activeModels.Count < 2)
@@ -1085,7 +1288,21 @@ public class QRCodeManager : MonoBehaviour
                 Destroy(model.Instance);
             }
         }
+        foreach (var model in _networkSpawnedObjects)
+        {
+            SetModelAttacking(model, false);
+
+            if (model.HealthBarRoot)
+            {
+                Destroy(model.HealthBarRoot);
+            }
+            if (model.Instance)
+            {
+                Destroy(model.Instance);
+            }
+        }
         _spawnedObjects.Clear();
+        _networkSpawnedObjects.Clear();
         if (s_instance == this)
         {
             s_instance = null;
