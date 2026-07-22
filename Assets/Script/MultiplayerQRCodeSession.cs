@@ -6,6 +6,7 @@ using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.XR;
 
 public class MultiplayerQRCodeSession : MonoBehaviour
 {
@@ -18,8 +19,10 @@ public class MultiplayerQRCodeSession : MonoBehaviour
 
     [SerializeField] private string connectAddress = "127.0.0.1";
     [SerializeField] private ushort port = DefaultPort;
-    [SerializeField] private bool showRuntimeGui = true;
-    [SerializeField] private bool showVrControlPanel = true;
+    [SerializeField] private bool showRuntimeGui = false;
+    [SerializeField] private bool showVrControlPanel = false;
+    [SerializeField] private bool enableControllerShortcuts = true;
+    [SerializeField] private float controllerShortcutCooldown = 0.5f;
     [SerializeField] private float vrPanelDistance = 1.35f;
     [SerializeField] private float vrPanelHeightOffset = -0.12f;
     [SerializeField] private float gazeSelectSeconds = 1.1f;
@@ -33,9 +36,19 @@ public class MultiplayerQRCodeSession : MonoBehaviour
     private Canvas vrCanvas;
     private RectTransform vrPanel;
     private Text vrStatusText;
+    private Camera vrPanelCamera;
     private VrPanelButton gazedButton;
     private float gazedButtonSince = -1f;
+    private GameObject fallbackPanelRoot;
+    private TextMesh fallbackStatusText;
+    private VrTextButton gazedTextButton;
+    private float gazedTextButtonSince = -1f;
+    private bool rightPrimaryWasPressed;
+    private bool rightSecondaryWasPressed;
+    private bool leftSecondaryWasPressed;
+    private float nextControllerShortcutTime;
     private readonly List<VrPanelButton> vrButtons = new List<VrPanelButton>();
+    private readonly List<VrTextButton> fallbackButtons = new List<VrTextButton>();
     private readonly List<SpawnRecord> serverSpawnRecords = new List<SpawnRecord>();
 
     private class VrPanelButton
@@ -43,6 +56,15 @@ public class MultiplayerQRCodeSession : MonoBehaviour
         public RectTransform RectTransform;
         public Image Background;
         public Text Label;
+        public string LabelText;
+        public Action Click;
+    }
+
+    private class VrTextButton
+    {
+        public GameObject Root;
+        public Renderer Background;
+        public TextMesh Label;
         public string LabelText;
         public Action Click;
     }
@@ -89,6 +111,7 @@ public class MultiplayerQRCodeSession : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateSessionOnLoad()
     {
+        Debug.Log("<<< MultiplayerQRCodeSession runtime bootstrap v20260722-01 >>>");
         _ = Instance;
     }
 
@@ -103,18 +126,80 @@ public class MultiplayerQRCodeSession : MonoBehaviour
         s_instance = this;
         DontDestroyOnLoad(gameObject);
         EnsureNetworkManager();
+        Debug.Log("<<< MultiplayerQRCodeSession awake v20260722-01 >>>");
     }
 
     private void Update()
     {
+        HandleControllerShortcuts();
         RegisterMessageHandlersIfReady();
         BroadcastBattleStateIfNeeded();
         UpdateVrControlPanel();
     }
 
+    private void HandleControllerShortcuts()
+    {
+        if (!enableControllerShortcuts)
+        {
+            return;
+        }
+
+        var rightHand = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
+        var leftHand = InputDevices.GetDeviceAtXRNode(XRNode.LeftHand);
+
+        var rightPrimaryPressed = IsButtonPressed(rightHand, CommonUsages.primaryButton);
+        var rightSecondaryPressed = IsButtonPressed(rightHand, CommonUsages.secondaryButton);
+        var leftSecondaryPressed = IsButtonPressed(leftHand, CommonUsages.secondaryButton);
+
+        if (WasPressedThisFrame(rightPrimaryPressed, ref rightPrimaryWasPressed))
+        {
+            RunControllerShortcut(StartHost, "A / Start Host");
+        }
+
+        if (WasPressedThisFrame(rightSecondaryPressed, ref rightSecondaryWasPressed))
+        {
+            RunControllerShortcut(StartClient, "B / Start Client");
+        }
+
+        if (WasPressedThisFrame(leftSecondaryPressed, ref leftSecondaryWasPressed))
+        {
+            RunControllerShortcut(Shutdown, "Y / Shutdown");
+        }
+    }
+
+    private static bool IsButtonPressed(InputDevice device, InputFeatureUsage<bool> button)
+    {
+        return device.isValid && device.TryGetFeatureValue(button, out var pressed) && pressed;
+    }
+
+    private static bool WasPressedThisFrame(bool pressed, ref bool wasPressed)
+    {
+        var triggered = pressed && !wasPressed;
+        wasPressed = pressed;
+        return triggered;
+    }
+
+    private void RunControllerShortcut(Action action, string label)
+    {
+        if (Time.unscaledTime < nextControllerShortcutTime)
+        {
+            return;
+        }
+
+        nextControllerShortcutTime = Time.unscaledTime + Mathf.Max(0.1f, controllerShortcutCooldown);
+        Debug.Log($"<<< Controller shortcut: {label} >>>");
+        action?.Invoke();
+    }
+
     public void StartHost()
     {
         EnsureNetworkManager();
+        if (networkManager.IsListening)
+        {
+            Debug.Log("<<< Multiplayer already running; StartHost ignored. >>>");
+            return;
+        }
+
         ConfigureTransport("0.0.0.0");
         networkManager.StartHost();
         RegisterMessageHandlersIfReady();
@@ -124,6 +209,12 @@ public class MultiplayerQRCodeSession : MonoBehaviour
     public void StartClient()
     {
         EnsureNetworkManager();
+        if (networkManager.IsListening)
+        {
+            Debug.Log("<<< Multiplayer already running; StartClient ignored. >>>");
+            return;
+        }
+
         ConfigureTransport(connectAddress);
         networkManager.StartClient();
         RegisterMessageHandlersIfReady();
@@ -421,15 +512,42 @@ public class MultiplayerQRCodeSession : MonoBehaviour
             return;
         }
 
-        var camera = Camera.main;
+        var camera = GetVrPanelCamera();
         if (!camera)
         {
+            if (Time.frameCount % 120 == 0)
+            {
+                Debug.LogWarning("<<< Multiplayer QR panel waiting for an active camera. >>>");
+            }
             return;
         }
 
         EnsureVrControlPanel(camera.transform);
+        EnsureFallbackControlPanel(camera.transform);
         UpdateVrPanelStatus();
         UpdateGazeSelection(camera);
+        UpdateFallbackGazeSelection(camera);
+    }
+
+    private Camera GetVrPanelCamera()
+    {
+        if (vrPanelCamera && vrPanelCamera.isActiveAndEnabled)
+        {
+            return vrPanelCamera;
+        }
+
+        if (Camera.main && Camera.main.isActiveAndEnabled)
+        {
+            vrPanelCamera = Camera.main;
+            return vrPanelCamera;
+        }
+
+        var cameras = FindObjectsByType<Camera>(FindObjectsSortMode.None);
+        vrPanelCamera = cameras
+            .Where(camera => camera && camera.isActiveAndEnabled)
+            .OrderByDescending(camera => camera.depth)
+            .FirstOrDefault();
+        return vrPanelCamera;
     }
 
     private void EnsureVrControlPanel(Transform cameraTransform)
@@ -441,21 +559,15 @@ public class MultiplayerQRCodeSession : MonoBehaviour
                 vrCanvas.gameObject.SetActive(true);
             }
 
-            var toPanel = vrCanvas.transform.position - cameraTransform.position;
-            if (Vector3.Dot(cameraTransform.forward, toPanel.normalized) < 0.35f ||
-                toPanel.magnitude > vrPanelDistance * 2.2f ||
-                toPanel.magnitude < vrPanelDistance * 0.45f)
-            {
-                PlaceVrPanel(cameraTransform);
-            }
+            PlaceVrPanel(cameraTransform);
             return;
         }
 
         var root = new GameObject("Multiplayer QR VR Panel", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
-        DontDestroyOnLoad(root);
         vrCanvas = root.GetComponent<Canvas>();
         vrCanvas.renderMode = RenderMode.WorldSpace;
         vrCanvas.sortingOrder = 200;
+        vrCanvas.worldCamera = cameraTransform.GetComponent<Camera>();
 
         var scaler = root.GetComponent<CanvasScaler>();
         scaler.dynamicPixelsPerUnit = 12f;
@@ -468,7 +580,7 @@ public class MultiplayerQRCodeSession : MonoBehaviour
 
         CreateVrText(vrPanel, "Title", "Multiplayer QR Session", new Vector2(0f, 126f), 26, FontStyle.Bold);
         vrStatusText = CreateVrText(vrPanel, "Status", string.Empty, new Vector2(0f, 88f), 17, FontStyle.Normal);
-        CreateVrText(vrPanel, "Hint", "Look at a button to select", new Vector2(0f, -130f), 15, FontStyle.Normal);
+        CreateVrText(vrPanel, "Hint", "Look at a button for 1 second", new Vector2(0f, -130f), 15, FontStyle.Normal);
 
         vrButtons.Clear();
         vrButtons.Add(CreateVrButton(vrPanel, "Start Host", new Vector2(0f, 36f), StartHost));
@@ -485,12 +597,14 @@ public class MultiplayerQRCodeSession : MonoBehaviour
             return;
         }
 
-        var position = cameraTransform.position +
-                       cameraTransform.forward * Mathf.Max(0.6f, vrPanelDistance) +
-                       Vector3.up * vrPanelHeightOffset;
-        vrCanvas.transform.position = position;
-        vrCanvas.transform.rotation = Quaternion.LookRotation(position - cameraTransform.position, Vector3.up);
-        vrCanvas.transform.localScale = Vector3.one * 0.0025f;
+        if (vrCanvas.transform.parent != cameraTransform)
+        {
+            vrCanvas.transform.SetParent(cameraTransform, false);
+        }
+
+        vrCanvas.transform.localPosition = new Vector3(0f, vrPanelHeightOffset, Mathf.Max(0.45f, vrPanelDistance));
+        vrCanvas.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+        vrCanvas.transform.localScale = Vector3.one * 0.0032f;
     }
 
     private void UpdateVrPanelStatus()
@@ -508,6 +622,218 @@ public class MultiplayerQRCodeSession : MonoBehaviour
         }
 
         vrStatusText.text = $"Offline / Client target: {connectAddress}:{port}";
+    }
+
+    private void EnsureFallbackControlPanel(Transform cameraTransform)
+    {
+        if (fallbackPanelRoot)
+        {
+            if (fallbackPanelRoot.transform.parent != cameraTransform)
+            {
+                fallbackPanelRoot.transform.SetParent(cameraTransform, false);
+            }
+
+            fallbackPanelRoot.transform.localPosition = new Vector3(0f, vrPanelHeightOffset + 0.02f, Mathf.Max(0.45f, vrPanelDistance * 0.82f));
+            fallbackPanelRoot.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            fallbackPanelRoot.transform.localScale = Vector3.one;
+            return;
+        }
+
+        fallbackPanelRoot = new GameObject("Multiplayer QR Fallback 3D Panel");
+        fallbackPanelRoot.transform.SetParent(cameraTransform, false);
+        fallbackPanelRoot.transform.localPosition = new Vector3(0f, vrPanelHeightOffset + 0.02f, Mathf.Max(0.45f, vrPanelDistance * 0.82f));
+        fallbackPanelRoot.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+
+        CreateFallbackQuad(fallbackPanelRoot.transform, "Backplate", new Vector3(0f, 0f, 0.03f), new Vector2(0.82f, 0.62f), new Color(0.01f, 0.018f, 0.035f, 0.92f));
+        CreateFallbackText(fallbackPanelRoot.transform, "Title", "Multiplayer QR Session", new Vector3(0f, 0.23f, 0f), 0.045f, FontStyle.Bold, Color.cyan);
+        fallbackStatusText = CreateFallbackText(fallbackPanelRoot.transform, "Status", string.Empty, new Vector3(0f, 0.15f, 0f), 0.026f, FontStyle.Normal, Color.white);
+        CreateFallbackText(fallbackPanelRoot.transform, "Hint", "Look at a button for 1 second", new Vector3(0f, -0.255f, 0f), 0.023f, FontStyle.Normal, new Color(0.85f, 0.95f, 1f, 1f));
+
+        fallbackButtons.Clear();
+        fallbackButtons.Add(CreateFallbackButton(fallbackPanelRoot.transform, "Start Host", new Vector3(0f, 0.06f, 0f), StartHost));
+        fallbackButtons.Add(CreateFallbackButton(fallbackPanelRoot.transform, "Start Client", new Vector3(0f, -0.065f, 0f), StartClient));
+        fallbackButtons.Add(CreateFallbackButton(fallbackPanelRoot.transform, "Shutdown", new Vector3(0f, -0.19f, 0f), Shutdown));
+
+        Debug.Log("<<< Multiplayer QR fallback 3D panel created. >>>");
+    }
+
+    private void UpdateFallbackStatus()
+    {
+        if (!fallbackStatusText)
+        {
+            return;
+        }
+
+        if (networkManager && networkManager.IsListening)
+        {
+            var mode = networkManager.IsHost ? "Host" : networkManager.IsServer ? "Server" : "Client";
+            fallbackStatusText.text = $"Online: {mode} / ClientId {networkManager.LocalClientId}";
+            return;
+        }
+
+        fallbackStatusText.text = $"Offline / Client target: {connectAddress}:{port}";
+    }
+
+    private void UpdateFallbackGazeSelection(Camera camera)
+    {
+        UpdateFallbackStatus();
+
+        var hitButton = GetGazedFallbackButton(camera);
+        if (hitButton == null)
+        {
+            gazedTextButton = null;
+            gazedTextButtonSince = -1f;
+            ResetFallbackButtonHighlights(null, 0f);
+            return;
+        }
+
+        if (gazedTextButton != hitButton)
+        {
+            gazedTextButton = hitButton;
+            gazedTextButtonSince = Time.time;
+        }
+
+        var holdDuration = Mathf.Max(0.1f, gazeSelectSeconds);
+        var progress = Mathf.Clamp01((Time.time - gazedTextButtonSince) / holdDuration);
+        ResetFallbackButtonHighlights(hitButton, progress);
+
+        if (progress < 1f)
+        {
+            return;
+        }
+
+        gazedTextButtonSince = Time.time + 0.45f;
+        hitButton.Click?.Invoke();
+    }
+
+    private VrTextButton GetGazedFallbackButton(Camera camera)
+    {
+        var ray = new Ray(camera.transform.position, camera.transform.forward);
+        foreach (var button in fallbackButtons)
+        {
+            if (button?.Root == null)
+            {
+                continue;
+            }
+
+            var collider = button.Root.GetComponent<BoxCollider>();
+            if (collider && collider.Raycast(ray, out _, Mathf.Max(0.6f, vrPanelDistance) + 0.35f))
+            {
+                return button;
+            }
+        }
+
+        return null;
+    }
+
+    private void ResetFallbackButtonHighlights(VrTextButton activeButton, float progress)
+    {
+        foreach (var button in fallbackButtons)
+        {
+            if (button?.Background)
+            {
+                var color = button == activeButton
+                    ? Color.Lerp(new Color(0.07f, 0.28f, 0.72f, 1f), new Color(0f, 0.95f, 1f, 1f), progress)
+                    : new Color(0.05f, 0.1f, 0.22f, 1f);
+                button.Background.material.color = color;
+            }
+
+            if (button?.Label)
+            {
+                button.Label.text = button == activeButton && progress > 0f
+                    ? $"{button.LabelText} {Mathf.CeilToInt((1f - progress) * gazeSelectSeconds + 0.01f)}"
+                    : button.LabelText;
+            }
+        }
+    }
+
+    private static VrTextButton CreateFallbackButton(Transform parent, string text, Vector3 localPosition, Action click)
+    {
+        var root = new GameObject(text);
+        root.transform.SetParent(parent, false);
+        root.transform.localPosition = localPosition;
+        root.transform.localRotation = Quaternion.identity;
+
+        var background = CreateFallbackQuad(root.transform, "ButtonBack", Vector3.zero, new Vector2(0.48f, 0.075f), new Color(0.05f, 0.1f, 0.22f, 1f));
+        var label = CreateFallbackText(root.transform, "Label", text, new Vector3(0f, -0.012f, -0.006f), 0.036f, FontStyle.Bold, Color.white);
+
+        var collider = root.AddComponent<BoxCollider>();
+        collider.center = Vector3.zero;
+        collider.size = new Vector3(0.52f, 0.09f, 0.08f);
+
+        return new VrTextButton
+        {
+            Root = root,
+            Background = background,
+            Label = label,
+            LabelText = text,
+            Click = click
+        };
+    }
+
+    private static Renderer CreateFallbackQuad(Transform parent, string name, Vector3 localPosition, Vector2 size, Color color)
+    {
+        var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        quad.name = name;
+        quad.transform.SetParent(parent, false);
+        quad.transform.localPosition = localPosition;
+        quad.transform.localRotation = Quaternion.identity;
+        quad.transform.localScale = new Vector3(size.x, size.y, 1f);
+
+        var collider = quad.GetComponent<Collider>();
+        if (collider)
+        {
+            Destroy(collider);
+        }
+
+        var renderer = quad.GetComponent<Renderer>();
+        renderer.material = CreateUnlitMaterial(color);
+        return renderer;
+    }
+
+    private static TextMesh CreateFallbackText(Transform parent, string name, string text, Vector3 localPosition, float characterSize, FontStyle fontStyle, Color color)
+    {
+        var obj = new GameObject(name, typeof(TextMesh), typeof(MeshRenderer));
+        obj.transform.SetParent(parent, false);
+        obj.transform.localPosition = localPosition;
+        obj.transform.localRotation = Quaternion.identity;
+
+        var label = obj.GetComponent<TextMesh>();
+        label.font = GetBuiltInFont();
+        label.text = text;
+        label.anchor = TextAnchor.MiddleCenter;
+        label.alignment = TextAlignment.Center;
+        label.characterSize = characterSize;
+        label.fontSize = 64;
+        label.fontStyle = fontStyle;
+        label.color = color;
+
+        var renderer = obj.GetComponent<MeshRenderer>();
+        renderer.material = label.font ? label.font.material : CreateUnlitMaterial(color);
+        renderer.material.color = color;
+
+        return label;
+    }
+
+    private static Material CreateUnlitMaterial(Color color)
+    {
+        var shader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (!shader)
+        {
+            shader = Shader.Find("Unlit/Color");
+        }
+        if (!shader)
+        {
+            shader = Shader.Find("Sprites/Default");
+        }
+        if (!shader)
+        {
+            shader = Shader.Find("Standard");
+        }
+
+        var material = new Material(shader);
+        material.color = color;
+        return material;
     }
 
     private void UpdateGazeSelection(Camera camera)

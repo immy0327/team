@@ -173,6 +173,8 @@ public class QRCodeManager : MonoBehaviour
     private void OnEnable()
     {
         s_instance = this;
+        Debug.Log("<<< QRCodeManager enabled and requesting MultiplayerQRCodeSession v20260722-01 >>>");
+        _ = MultiplayerQRCodeSession.Instance;
 
         if (!_mrukInstance)
         {
